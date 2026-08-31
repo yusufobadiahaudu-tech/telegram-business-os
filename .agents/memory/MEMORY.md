@@ -1,0 +1,1 @@
+- [OpenAPI integer compatibility](codegen-zod-compatibility.md) — generated integer validators depend on the workspace Zod API; confirm compatibility before adding integer fields.
