@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "Telegram Business OS"
+description = "A production-minded operations dashboard for Telegram communities, with member access, payments, bot event processing, and workspace health visibility."
+version = "1.0.0"
+id = "artifacts/telegram-business-os"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 23822
+
+[services.development]
+run = "pnpm --filter @workspace/telegram-business-os run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/telegram-business-os", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/telegram-business-os/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "23822"
+BASE_PATH = "/"
