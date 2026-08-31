@@ -1,0 +1,407 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: Telegram Business OS operations API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: dashboard
+    description: Workspace health and activity
+  - name: members
+    description: Telegram community members
+  - name: payments
+    description: Payment records
+  - name: bot-events
+    description: Telegram bot event queue
+  - name: settings
+    description: Workspace settings
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+  /dashboard:
+    get:
+      operationId: getDashboard
+      tags: [dashboard]
+      summary: Get dashboard overview
+      responses:
+        "200":
+          description: Dashboard overview
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DashboardOverview"
+  /activity:
+    get:
+      operationId: getActivity
+      tags: [dashboard]
+      summary: Get recent workspace activity
+      responses:
+        "200":
+          description: Recent activity
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivityItem"
+  /members:
+    get:
+      operationId: getMembers
+      tags: [members]
+      summary: List community members
+      parameters:
+        - name: search
+          in: query
+          required: false
+          schema:
+            type: string
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, active, grace, churned, paused, refunded]
+            default: all
+      responses:
+        "200":
+          description: Members
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Member"
+  /members/{id}:
+    patch:
+      operationId: updateMember
+      tags: [members]
+      summary: Update a member access record
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MemberUpdate"
+      responses:
+        "200":
+          description: Updated member
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Member"
+        "404":
+          description: Member not found
+    delete:
+      operationId: deleteMember
+      tags: [members]
+      summary: Revoke member access
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "204":
+          description: Member access revoked
+        "404":
+          description: Member not found
+  /payments:
+    get:
+      operationId: getPayments
+      tags: [payments]
+      summary: List payments
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, confirmed, pending, refunded]
+            default: all
+      responses:
+        "200":
+          description: Payments
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Payment"
+  /bot-events:
+    get:
+      operationId: getBotEvents
+      tags: [bot-events]
+      summary: List bot queue events
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [all, pending, processing, completed, failed]
+            default: all
+      responses:
+        "200":
+          description: Bot events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/BotEvent"
+  /bot-events/{id}/retry:
+    post:
+      operationId: retryBotEvent
+      tags: [bot-events]
+      summary: Retry a failed bot event
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Retried bot event
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BotEvent"
+        "404":
+          description: Bot event not found
+  /settings:
+    get:
+      operationId: getSettings
+      tags: [settings]
+      summary: Get workspace settings
+      responses:
+        "200":
+          description: Workspace settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceSettings"
+  /webhooks/whop:
+    post:
+      operationId: ingestWhopWebhook
+      tags: [settings]
+      summary: Queue a signed Whop webhook
+      parameters:
+        - name: webhook-signature
+          in: header
+          required: false
+          schema:
+            type: string
+        - name: x-whop-signature
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WebhookPayload"
+      responses:
+        "200":
+          description: Webhook queued
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookQueued"
+        "400":
+          description: Invalid webhook
+        "401":
+          description: Invalid signature
+        "503":
+          description: Webhook not configured
+    patch:
+      operationId: updateSettings
+      tags: [settings]
+      summary: Update workspace settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/WorkspaceSettingsUpdate"
+      responses:
+        "200":
+          description: Updated workspace settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WorkspaceSettings"
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+    DashboardOverview:
+      type: object
+      required: [workspace, metrics, revenue, queue, health]
+      properties:
+        workspace:
+          type: object
+          required: [name, plan, connected]
+          properties:
+            name: { type: string }
+            plan: { type: string }
+            connected: { type: boolean }
+        metrics:
+          type: object
+          required: [activeMembers, membersDelta, monthlyRevenue, revenueDelta, pendingEvents, failedEvents]
+          properties:
+            activeMembers: { type: number }
+            membersDelta: { type: number }
+            monthlyRevenue: { type: number }
+            revenueDelta: { type: number }
+            pendingEvents: { type: number }
+            failedEvents: { type: number }
+        revenue:
+          type: array
+          items:
+            $ref: "#/components/schemas/RevenuePoint"
+        queue:
+          type: object
+          required: [pending, processing, completed, failed]
+          properties:
+            pending: { type: number }
+            processing: { type: number }
+            completed: { type: number }
+            failed: { type: number }
+        health:
+          type: object
+          required: [status, webhookLatency, lastWebhook, workerStatus]
+          properties:
+            status: { type: string }
+            webhookLatency: { type: number }
+            lastWebhook: { type: string, format: date-time }
+            workerStatus: { type: string }
+    RevenuePoint:
+      type: object
+      required: [label, amount]
+      properties:
+        label: { type: string }
+        amount: { type: number }
+    ActivityItem:
+      type: object
+      required: [id, type, title, description, timestamp, status]
+      properties:
+        id: { type: string }
+        type: { type: string }
+        title: { type: string }
+        description: { type: string }
+        timestamp: { type: string, format: date-time }
+        status: { type: string }
+    Member:
+      type: object
+      required: [id, telegramId, username, tier, status, joinDate, expiryDate, amount, currency]
+      properties:
+        id: { type: string }
+        telegramId: { type: number }
+        username: { type: string }
+        tier: { type: string }
+        status: { type: string }
+        joinDate: { type: string, format: date-time }
+        expiryDate: { type: string, format: date-time }
+        amount: { type: number }
+        currency: { type: string }
+    MemberUpdate:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [active, grace, churned, paused, refunded]
+        tier: { type: string }
+        expiryDate: { type: string, format: date-time }
+    Payment:
+      type: object
+      required: [id, memberId, memberUsername, amount, fee, net, currency, status, createdAt]
+      properties:
+        id: { type: string }
+        memberId: { type: string }
+        memberUsername: { type: string }
+        amount: { type: number }
+        fee: { type: number }
+        net: { type: number }
+        currency: { type: string }
+        status: { type: string }
+        createdAt: { type: string, format: date-time }
+    BotEvent:
+      type: object
+      required: [id, telegramId, memberUsername, eventType, status, retryCount, createdAt, updatedAt]
+      properties:
+        id: { type: string }
+        telegramId: { type: number }
+        memberUsername: { type: string }
+        eventType: { type: string }
+        status: { type: string }
+        retryCount: { type: number }
+        lastError: { type: ["string", "null"] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    WorkspaceSettings:
+      type: object
+      required: [workspaceName, whopCompanyId, defaultTier, botConnected, webhookConnected, notifications]
+      properties:
+        workspaceName: { type: string }
+        whopCompanyId: { type: string }
+        defaultTier: { type: string }
+        botConnected: { type: boolean }
+        webhookConnected: { type: boolean }
+        notifications:
+          type: object
+          required: [failedEvents, dailySummary]
+          properties:
+            failedEvents: { type: boolean }
+            dailySummary: { type: boolean }
+    WorkspaceSettingsUpdate:
+      type: object
+      properties:
+        workspaceName: { type: string, minLength: 1 }
+        defaultTier: { type: string, minLength: 1 }
+        notifications:
+          type: object
+          properties:
+            failedEvents: { type: boolean }
+            dailySummary: { type: boolean }
+    WebhookQueued:
+      type: object
+      required: [status, duplicate]
+      properties:
+        status: { type: string }
+        duplicate: { type: boolean }
+        outbox_id: { type: ["string", "null"] }
+    WebhookPayload:
+      type: object
+      additionalProperties: true
+
