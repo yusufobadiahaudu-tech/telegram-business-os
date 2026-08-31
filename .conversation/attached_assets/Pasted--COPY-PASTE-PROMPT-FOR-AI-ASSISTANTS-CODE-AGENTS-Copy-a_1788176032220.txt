@@ -1,0 +1,557 @@
+### 🤖 COPY-PASTE PROMPT FOR AI ASSISTANTS / CODE AGENTS
+Copy and paste the entire block below into your AI editor (**Cursor**, **Claude Code**, **Replit Agent**, or **Windsurf**) to build, configure, and prepare **Telegram Business OS v3** for deployment.
+```markdown
+# TASK: BUILD & PREPARE FOR DEPLOYMENT — TELEGRAM BUSINESS OS v3
+
+You are acting as a Lead DevOps & Senior Full-Stack Software Engineer. Your objective is to build and output the complete, production-grade codebase for "Telegram Business OS v3" and prepare all deployment configurations.
+
+The stack is:
+- Framework: Next.js 14+ (App Router, TypeScript, Tailwind CSS)
+- Database & Auth: Supabase (PostgreSQL, Row Level Security, Edge Functions)
+- Webhooks & Billing: Whop API (OAuth + HMAC-signed webhooks)
+- Messaging Engine: Node.js Telegram Bot API worker
+- Task Scheduling: Supabase pg_cron + Edge Functions
+- Hosting Target: Vercel (Frontend/API) + Supabase (DB/Edge Functions)
+
+Follow the complete, hardened system architecture blueprint specified below. Ensure zero hardcoded secrets, full TypeScript safety, strict tenant isolation, and transactional integrity.
+
+---
+
+## 📄 FILE STRUCTURE TO GENERATE
+
+```text
+telegram-business-os/
+├── app/
+│   ├── layout.tsx
+│   ├── page.tsx
+│   ├── (dashboard)/
+│   │   ├── layout.tsx
+│   │   ├── dashboard/page.tsx
+│   │   ├── members/page.tsx
+│   │   ├── payments/page.tsx
+│   │   ├── bot-events/page.tsx
+│   │   └── settings/
+│   │       ├── page.tsx
+│   │       └── observability/page.tsx
+│   └── api/
+│       └── webhooks/
+│           └── whop/route.ts
+├── lib/
+│   ├── supabase/
+│   │   ├── client.ts
+│   │   └── server.ts
+│   └── whop.ts
+├── supabase/
+│   ├── migrations/
+│   │   └── 001_initial_schema_v3_hardened.sql
+│   └── functions/
+│       └── outbox-processor/
+│           └── index.ts
+├── worker/
+│   ├── package.json
+│   └── bot-worker.js
+├── .env.example
+├── next.config.mjs
+├── package.json
+├── README.md
+└── vercel.json
+
+```
+## 1. DATABASE MIGRATION SCRIPT (supabase/migrations/001_initial_schema_v3_hardened.sql)
+Create the complete database migration file:
+```sql
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pg_cron";
+
+-- Enums
+CREATE TYPE subscription_status AS ENUM ('active', 'expired', 'grace', 'churned', 'paused', 'refunded');
+CREATE TYPE user_role AS ENUM ('admin', 'operator', 'viewer');
+CREATE TYPE actor_type AS ENUM ('system', 'admin', 'bot', 'webhook');
+
+-- Tables
+CREATE TABLE workspaces (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name TEXT NOT NULL,
+  whop_company_id TEXT UNIQUE NOT NULL,
+  telegram_bot_token TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  whop_user_id TEXT UNIQUE NOT NULL,
+  email TEXT NOT NULL,
+  role user_role DEFAULT 'admin',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE subscription_tiers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  price NUMERIC(10,2) NOT NULL,
+  billing_cycle TEXT NOT NULL,
+  access_level INT DEFAULT 1,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE members (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  telegram_id BIGINT NOT NULL,
+  username TEXT,
+  tier_id UUID REFERENCES subscription_tiers(id),
+  status subscription_status DEFAULT 'active',
+  join_date TIMESTAMPTZ DEFAULT NOW(),
+  expiry_date TIMESTAMPTZ NOT NULL,
+  deleted_at TIMESTAMPTZ DEFAULT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  CONSTRAINT unique_member_per_workspace UNIQUE (workspace_id, telegram_id)
+);
+
+CREATE TABLE payments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  member_id UUID NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+  idempotency_key TEXT UNIQUE NOT NULL,
+  gross_amount NUMERIC(10,2) NOT NULL,
+  fee_amount NUMERIC(10,2) NOT NULL DEFAULT 0.00,
+  net_amount NUMERIC(10,2) GENERATED ALWAYS AS (gross_amount - fee_amount) STORED,
+  currency TEXT DEFAULT 'USD',
+  status TEXT NOT NULL DEFAULT 'confirmed',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE outbox_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  event_version INT DEFAULT 1,
+  processed BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE bot_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  telegram_id BIGINT NOT NULL,
+  event_type TEXT NOT NULL,
+  status TEXT DEFAULT 'pending',
+  retry_count INT DEFAULT 0,
+  last_error TEXT,
+  idempotency_key TEXT UNIQUE,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX idx_unique_active_bot_event 
+ON bot_events (workspace_id, telegram_id, event_type) 
+WHERE status IN ('pending', 'processing');
+
+CREATE TABLE rate_limit_state (
+  workspace_id UUID PRIMARY KEY REFERENCES workspaces(id) ON DELETE CASCADE,
+  blocked_until TIMESTAMPTZ DEFAULT NOW(),
+  request_count INT DEFAULT 0,
+  last_request_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE failed_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  original_event_id UUID NOT NULL,
+  event_source TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  failure_reason TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE audit_logs (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+  actor_type actor_type NOT NULL,
+  event_source TEXT NOT NULL,
+  severity TEXT DEFAULT 'info',
+  trace_id TEXT NOT NULL,
+  latency_ms INT DEFAULT 0,
+  payload JSONB NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Indexes
+CREATE INDEX idx_users_workspace ON users(workspace_id);
+CREATE INDEX idx_members_workspace_telegram ON members(workspace_id, telegram_id);
+CREATE INDEX idx_members_expiry ON members(expiry_date) WHERE deleted_at IS NULL;
+CREATE INDEX idx_payments_member ON payments(member_id);
+CREATE INDEX idx_payments_idempotency ON payments(idempotency_key);
+CREATE INDEX idx_outbox_unprocessed ON outbox_events(processed, created_at) WHERE processed = FALSE;
+CREATE INDEX idx_bot_queue_pending ON bot_events(status, retry_count) WHERE status = 'pending';
+
+-- Row Level Security
+ALTER TABLE workspaces ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE subscription_tiers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE members ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE outbox_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE bot_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE rate_limit_state ENABLE ROW LEVEL SECURITY;
+ALTER TABLE failed_events ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+
+CREATE OR REPLACE FUNCTION get_current_workspace_id() 
+RETURNS UUID AS $$   SELECT workspace_id FROM users WHERE whop_user_id = auth.uid()::text LIMIT 1; $$ LANGUAGE sql STABLE SECURITY DEFINER;
+
+CREATE POLICY tenant_isolation_members ON members FOR ALL USING (workspace_id = get_current_workspace_id());
+CREATE POLICY tenant_isolation_payments ON payments FOR ALL USING (workspace_id = get_current_workspace_id());
+CREATE POLICY tenant_isolation_tiers ON subscription_tiers FOR ALL USING (workspace_id = get_current_workspace_id());
+CREATE POLICY tenant_isolation_bot_events ON bot_events FOR ALL USING (workspace_id = get_current_workspace_id());
+CREATE POLICY tenant_isolation_outbox ON outbox_events FOR ALL USING (workspace_id = get_current_workspace_id());
+CREATE POLICY tenant_isolation_dlq ON failed_events FOR ALL USING (workspace_id = get_current_workspace_id());
+CREATE POLICY tenant_isolation_audit ON audit_logs FOR ALL USING (workspace_id = get_current_workspace_id());
+
+-- Atomic Ingestion Stored Procedure
+CREATE OR REPLACE FUNCTION process_webhook_ingestion_atomic(
+  p_workspace_id UUID,
+  p_event_type TEXT,
+  p_payload JSONB,
+  p_trace_id TEXT,
+  p_latency_ms INT
+) RETURNS UUID AS $$ DECLARE   v_outbox_id UUID; BEGIN   INSERT INTO outbox_events (workspace_id, event_type, payload)   VALUES (p_workspace_id, p_event_type, p_payload)   RETURNING id INTO v_outbox_id;    INSERT INTO audit_logs (     workspace_id, actor_type, event_source, severity, trace_id, latency_ms, payload   ) VALUES (     p_workspace_id, 'webhook', 'whop_webhook', 'info', p_trace_id, p_latency_ms,     jsonb_build_object('outbox_id', v_outbox_id, 'event_type', p_event_type)   );    RETURN v_outbox_id; END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Telemetry View
+CREATE OR REPLACE VIEW v_system_health AS
+SELECT 
+  w.id AS workspace_id,
+  w.name AS workspace_name,
+  (SELECT COUNT(*) FROM outbox_events WHERE workspace_id = w.id AND processed = FALSE) AS unprocessed_outbox_count,
+  (SELECT COUNT(*) FROM bot_events WHERE workspace_id = w.id AND status = 'pending') AS pending_bot_queue_depth,
+  (SELECT COUNT(*) FROM failed_events WHERE workspace_id = w.id) AS total_dlq_failures,
+  (SELECT AVG(latency_ms)::INT FROM audit_logs WHERE workspace_id = w.id AND created_at > NOW() - INTERVAL '1 hour') AS avg_webhook_latency_1h
+FROM workspaces w;
+
+-- Expiry State Machine Function
+CREATE OR REPLACE FUNCTION check_and_expire_subscriptions() 
+RETURNS VOID AS $$ BEGIN   UPDATE members    SET status = 'grace'   WHERE status = 'active' AND expiry_date < NOW();    UPDATE members    SET status = 'churned'   WHERE status = 'grace' AND expiry_date < (NOW() - INTERVAL '48 hours'); END; $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+```
+## 2. API WEBHOOK ROUTE (app/api/webhooks/whop/route.ts)
+```typescript
+import { NextResponse } from 'next/server';
+import crypto from 'crypto';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export async function POST(req: Request) {
+  const startTime = Date.now();
+  const traceId = crypto.randomUUID();
+
+  try {
+    const rawBody = await req.text();
+    const signature = req.headers.get('webhook-signature') || req.headers.get('x-whop-signature');
+    const webhookSecret = process.env.WHOP_WEBHOOK_SECRET!;
+
+    if (!signature) {
+      return NextResponse.json({ error: 'Missing HMAC signature' }, { status: 401 });
+    }
+
+    const hmac = crypto.createHmac('sha256', webhookSecret).update(rawBody).digest('base64');
+    const expectedSignature = `v1,${hmac}`;
+
+    if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))) {
+      return NextResponse.json({ error: 'Invalid HMAC Signature' }, { status: 401 });
+    }
+
+    const payload = JSON.parse(rawBody);
+    const eventType = payload.action || payload.event || 'payment.succeeded';
+    const workspaceId = payload.data?.custom_fields?.workspace_id || payload.workspace_id;
+    const idempotencyKey = payload.id || `whop_${traceId}`;
+
+    if (!workspaceId) {
+      return NextResponse.json({ error: 'Missing workspace_id context' }, { status: 400 });
+    }
+
+    const { data: outboxId, error: rpcError } = await supabase.rpc('process_webhook_ingestion_atomic', {
+      p_workspace_id: workspaceId,
+      p_event_type: eventType,
+      p_payload: { ...payload, idempotency_key: idempotencyKey },
+      p_trace_id: traceId,
+      p_latency_ms: Date.now() - startTime
+    });
+
+    if (rpcError) throw rpcError;
+
+    return NextResponse.json({ status: 'queued', outbox_id: outboxId, trace_id: traceId }, { status: 200 });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
+  }
+}
+
+```
+## 3. OUTBOX PROCESSOR EDGE FUNCTION (supabase/functions/outbox-processor/index.ts)
+```typescript
+import { createClient } from '[https://esm.sh/@supabase/supabase-js@2](https://esm.sh/@supabase/supabase-js@2)';
+
+Deno.serve(async () => {
+  const supabase = createClient(
+    Deno.env.get('SUPABASE_URL')!,
+    Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
+  );
+
+  const { data: events, error } = await supabase
+    .from('outbox_events')
+    .select('*')
+    .eq('processed', false)
+    .order('created_at', { ascending: true })
+    .limit(20);
+
+  if (error || !events) return new Response(JSON.stringify({ error }), { status: 500 });
+
+  for (const evt of events) {
+    const { workspace_id, payload } = evt;
+    const telegramId = payload.data?.telegram_id || payload.user_id;
+    const grossAmount = payload.data?.final_amount || payload.amount || 0;
+    const feeAmount = payload.data?.fee || 0;
+    const idempotencyKey = payload.idempotency_key;
+
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + 30);
+
+    const { data: member, error: memberError } = await supabase
+      .from('members')
+      .upsert({
+        workspace_id,
+        telegram_id: telegramId,
+        username: payload.data?.username || null,
+        status: 'active',
+        expiry_date: expiryDate.toISOString(),
+        deleted_at: null
+      }, { onConflict: 'workspace_id,telegram_id' })
+      .select()
+      .single();
+
+    if (!memberError && member) {
+      await supabase.from('payments').insert({
+        workspace_id,
+        member_id: member.id,
+        idempotency_key: idempotencyKey,
+        gross_amount: grossAmount,
+        fee_amount: feeAmount,
+        currency: 'USD',
+        status: 'confirmed'
+      });
+
+      await supabase.from('bot_events').insert({
+        workspace_id,
+        telegram_id: telegramId,
+        event_type: 'invite',
+        status: 'pending',
+        retry_count: 0
+      });
+    }
+
+    await supabase.from('outbox_events').update({ processed: true }).eq('id', evt.id);
+  }
+
+  return new Response(JSON.stringify({ processed: events.length }), { status: 200 });
+});
+
+```
+## 4. BOT WORKER SERVICE (worker/bot-worker.js & worker/package.json)
+**worker/package.json**:
+```json
+{
+  "name": "telegram-business-os-worker",
+  "version": "3.0.0",
+  "main": "bot-worker.js",
+  "scripts": {
+    "start": "node bot-worker.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "node-telegram-bot-api": "^0.65.0"
+  }
+}
+
+```
+**worker/bot-worker.js**:
+```javascript
+const { createClient } = require('@supabase/supabase-js');
+const TelegramBot = require('node-telegram-bot-api');
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+async function isWorkspaceThrottled(workspaceId) {
+  const { data } = await supabase
+    .from('rate_limit_state')
+    .select('blocked_until')
+    .eq('workspace_id', workspaceId)
+    .single();
+
+  if (!data || !data.blocked_until) return false;
+  return new Date(data.blocked_until) > new Date();
+}
+
+async function setWorkspaceThrottle(workspaceId, seconds) {
+  const blockedUntil = new Date(Date.now() + seconds * 1000).toISOString();
+  await supabase
+    .from('rate_limit_state')
+    .upsert({
+      workspace_id: workspaceId,
+      blocked_until: blockedUntil,
+      last_request_at: new Date().toISOString()
+    });
+}
+
+async function processBotQueue() {
+  const { data: events, error } = await supabase
+    .from('bot_events')
+    .select('*, workspaces(telegram_bot_token)')
+    .eq('status', 'pending')
+    .lt('retry_count', 5)
+    .limit(10);
+
+  if (error || !events || events.length === 0) return;
+
+  for (const evt of events) {
+    if (await isWorkspaceThrottled(evt.workspace_id)) {
+      console.log(`[Global Rate Limit] Workspace ${evt.workspace_id} throttled. Skipping.`);
+      continue;
+    }
+
+    const token = evt.workspaces?.telegram_bot_token || process.env.DEFAULT_TELEGRAM_BOT_TOKEN;
+    const bot = new TelegramBot(token, { polling: false });
+
+    try {
+      await supabase.from('bot_events').update({ status: 'processing' }).eq('id', evt.id);
+
+      if (evt.event_type === 'invite') {
+        const link = await bot.createChatInviteLink(evt.telegram_id, { member_limit: 1 });
+        await bot.sendMessage(evt.telegram_id, `Welcome! Here is your access link: ${link.invite_link}`);
+      } else if (evt.event_type === 'remove') {
+        await bot.banChatMember(evt.telegram_id, evt.telegram_id);
+        await bot.unbanChatMember(evt.telegram_id, evt.telegram_id);
+      }
+
+      await supabase.from('bot_events').update({ status: 'completed', updated_at: new Date() }).eq('id', evt.id);
+
+    } catch (err) {
+      const is429 = err.response && err.response.statusCode === 429;
+      const newRetryCount = evt.retry_count + 1;
+
+      if (is429) {
+        const retryAfter = err.response.body?.parameters?.retry_after || 30;
+        await setWorkspaceThrottle(evt.workspace_id, retryAfter);
+      }
+
+      if (newRetryCount >= 5) {
+        await supabase.from('failed_events').insert({
+          workspace_id: evt.workspace_id,
+          original_event_id: evt.id,
+          event_source: 'bot_queue',
+          payload: evt,
+          failure_reason: err.message || 'Exceeded 5 retries'
+        });
+
+        await supabase.from('bot_events').update({ status: 'failed', last_error: err.message }).eq('id', evt.id);
+      } else {
+        await supabase.from('bot_events').update({
+          status: 'pending',
+          retry_count: newRetryCount,
+          last_error: err.message,
+          updated_at: new Date()
+        }).eq('id', evt.id);
+      }
+    }
+  }
+}
+
+async function startWorker() {
+  console.log('🤖 Telegram Bot Queue Worker Live...');
+  while (true) {
+    try {
+      await processBotQueue();
+    } catch (e) {
+      console.error('[Worker Loop Error]', e);
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
+startWorker();
+
+```
+## 5. ENVIRONMENT & CONFIGURATION TEMPLATES
+**.env.example**:
+```env
+NEXT_PUBLIC_APP_URL=[https://your-app.vercel.app](https://your-app.vercel.app)
+NEXT_PUBLIC_SUPABASE_URL=[https://your-project.supabase.co](https://your-project.supabase.co)
+NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+WHOP_API_KEY=whop_api_key
+WHOP_WEBHOOK_SECRET=whop_webhook_secret
+DEFAULT_TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrsTUVwxyZ
+
+```
+**README.md**:
+```markdown
+# Telegram Business OS v3 — Deployment Protocol
+
+## Step 1: Database Setup
+1. Open your Supabase Dashboard -> SQL Editor.
+2. Execute `supabase/migrations/001_initial_schema_v3_hardened.sql`.
+
+## Step 2: Deploy Edge Function
+1. Install Supabase CLI: `npm i -g supabase`
+2. Link project: `supabase link --project-ref <your-ref>`
+3. Deploy function: `supabase functions deploy outbox-processor`
+
+## Step 3: Cron Configuration
+Run this inside Supabase SQL Editor:
+```sql
+SELECT cron.schedule(
+  'process-outbox-cron',
+  '* * * * *',
+  $$
+  SELECT net.http_post(
+    url := 'https://<your-project-ref>.supabase.co/functions/v1/outbox-processor',
+    headers := '{"Content-Type": "application/json", "Authorization": "Bearer <SERVICE_ROLE_KEY>"}'::jsonb,
+    body := '{}'::jsonb
+  );
+  $$
+);
+
+SELECT cron.schedule(
+  'check-expiry-daily',
+  '0 0 * * *',
+  $$ SELECT check_and_expire_subscriptions(); $$
+);
+
+```
+## Step 4: Webhook Registration
+Configure Whop Developer Portal webhooks to send events to:
+https://<your-vercel-domain>/api/webhooks/whop
+## Step 5: Start Worker Node
+In your background execution environment (Render / Railway / EC2):
+```bash
+cd worker
+npm install
+npm start
+
+```
+```
+
+---
+
+Now construct all files, apply Tailwind styling to the frontend routes, and organize the application structure cleanly.
+
+```
